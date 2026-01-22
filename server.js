@@ -1,12 +1,8 @@
-import express from "express";
 import { google } from "googleapis";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
-
-const app = express();
-const PORT = 3000;
 
 /* ---------------- AUTH ---------------- */
 
@@ -39,16 +35,9 @@ function parseDuration(duration) {
 
 function classify(title, channel) {
   const keywords = [
-    "tutorial",
-    "learn",
-    "course",
-    "how to",
-    "coding",
-    "programming",
-    "ai",
-    "startup",
-    "business",
-    "finance",
+    "tutorial", "learn", "course", "how to",
+    "coding", "programming", "ai",
+    "startup", "business", "finance"
   ];
 
   const text = (title + channel).toLowerCase();
@@ -57,89 +46,65 @@ function classify(title, channel) {
     : "entertainment";
 }
 
-/* ---------------- MAIN ROUTE ---------------- */
+/* ---------------- MAIN LOGIC ---------------- */
 
-app.get("/history", async (req, res) => {
-  try {
-    const youtube = google.youtube({
-      version: "v3",
-      auth: oauth2Client,
-    });
-
-    // 1️⃣ Get last sync time
-    const { data: state } = await supabase
-      .from("sync_state")
-      .select("last_synced_at")
-      .eq("id", 1)
-      .single();
-
-    const lastSync = new Date(state.last_synced_at);
-
-    // 2️⃣ Fetch ALL liked videos (pagination)
-    let allItems = [];
-    let nextPageToken = null;
-
-    do {
-      const response = await youtube.playlistItems.list({
-        part: "snippet",
-        playlistId: "LL",
-        maxResults: 50,
-        pageToken: nextPageToken,
-      });
-
-      allItems.push(...response.data.items);
-      nextPageToken = response.data.nextPageToken;
-    } while (nextPageToken);
-
-    // 3️⃣ Get video details
-    const videoIds = allItems.map(
-      v => v.snippet.resourceId.videoId
-    );
-
-    const details = await youtube.videos.list({
-      part: "snippet,contentDetails",
-      id: videoIds.join(","),
-    });
-
-    // 4️⃣ Prepare rows
-    const rows = details.data.items.map(v => ({
-      video_id: v.id,
-      title: v.snippet.title,
-      channel: v.snippet.channelTitle,
-      duration: parseDuration(v.contentDetails.duration),
-      type: classify(v.snippet.title, v.snippet.channelTitle),
-      video_url: `https://www.youtube.com/watch?v=${v.id}`,
-    }));
-
-    // 5️⃣ Insert into Supabase
-    const { error } = await supabase
-      .from("youtube_history")
-      .insert(rows);
-
-    if (error) throw error;
-
-    // 6️⃣ Update sync timestamp
-    await supabase
-      .from("sync_state")
-      .update({ last_synced_at: new Date() })
-      .eq("id", 1);
-
-    res.json({
-      success: true,
-      inserted: rows.length,
-    });
-
-  } catch (err) {
-    console.error("ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ---------------- SERVER ---------------- */
-
-if (process.env.RUN_MODE !== "github") {
-  app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+export async function runDailySync() {
+  const youtube = google.youtube({
+    version: "v3",
+    auth: oauth2Client,
   });
-}
 
+  // Get last sync time
+  const { data: state } = await supabase
+    .from("sync_state")
+    .select("last_synced_at")
+    .eq("id", 1)
+    .single();
+
+  let allItems = [];
+  let nextPageToken = null;
+
+  // Fetch ALL liked videos
+  do {
+    const res = await youtube.playlistItems.list({
+      part: "snippet",
+      playlistId: "LL",
+      maxResults: 50,
+      pageToken: nextPageToken,
+    });
+
+    allItems.push(...res.data.items);
+    nextPageToken = res.data.nextPageToken;
+  } while (nextPageToken);
+
+  const videoIds = allItems.map(v =>
+    v.snippet.resourceId.videoId
+  );
+
+  const details = await youtube.videos.list({
+    part: "snippet,contentDetails",
+    id: videoIds.join(","),
+  });
+
+  const rows = details.data.items.map(v => ({
+    video_id: v.id,
+    title: v.snippet.title,
+    channel: v.snippet.channelTitle,
+    duration: parseDuration(v.contentDetails.duration),
+    type: classify(v.snippet.title, v.snippet.channelTitle),
+    video_url: `https://www.youtube.com/watch?v=${v.id}`,
+  }));
+
+  const { error } = await supabase
+    .from("youtube_history")
+    .insert(rows);
+
+  if (error) throw error;
+
+  await supabase
+    .from("sync_state")
+    .update({ last_synced_at: new Date() })
+    .eq("id", 1);
+
+  console.log("✅ Daily YouTube sync completed");
+}
